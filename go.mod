@@ -1,0 +1,3 @@
+module github.com/catalinfl/monkey
+
+go 1.24.3
