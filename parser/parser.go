@@ -61,6 +61,17 @@ func (p *Parser) curPrecedence() int {
 	return LOWEST
 }
 
+func (p *Parser) parseGroupedExpression() ast.Expression {
+	p.nextToken()
+	exp := p.parseExpression(LOWEST)
+
+	if !p.expectPeek(token.RPAREN) {
+		return nil
+	}
+
+	return exp
+}
+
 func New(l *lexer.Lexer) *Parser {
 	p := &Parser{
 		l:      l,
@@ -68,10 +79,13 @@ func New(l *lexer.Lexer) *Parser {
 	}
 
 	p.prefixParseFns = make(map[token.TokenType]prefixParseFn)
+	p.registerPrefix(token.LPAREN, p.parseGroupedExpression)
 	p.registerPrefix(token.IDENT, p.parseIdentifier)
 	p.registerPrefix(token.INT, p.parseIntegerLiteral)
 	p.registerPrefix(token.BANG, p.parsePrefixExpression)
 	p.registerPrefix(token.MINUS, p.parsePrefixExpression)
+	p.registerPrefix(token.TRUE, p.parseBoolean)
+	p.registerPrefix(token.FALSE, p.parseBoolean)
 
 	p.infixParseFns = make(map[token.TokenType]infixParseFn)
 	p.registerInfix(token.PLUS, p.parseInfixExpression)
@@ -89,6 +103,13 @@ func New(l *lexer.Lexer) *Parser {
 	return p
 }
 
+func (p *Parser) parseBoolean() ast.Expression {
+	return &ast.Boolean{
+		Token: p.curToken,
+		Value: p.curTokenIs(token.TRUE),
+	}
+}
+
 func (p *Parser) parseIdentifier() ast.Expression {
 	return &ast.Identifier{
 		Token: p.curToken,
@@ -97,6 +118,7 @@ func (p *Parser) parseIdentifier() ast.Expression {
 }
 
 func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
+	defer untrace(trace("parseInfixExpression"))
 	expression := &ast.InfixExpression{
 		Token:    p.curToken,
 		Operator: p.curToken.Literal,
@@ -109,6 +131,30 @@ func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
 	return expression
 }
 
+func (p *Parser) parseExpression(precedence int) ast.Expression {
+	defer untrace(trace("parseExpression"))
+	prefix := p.prefixParseFns[p.curToken.Type]
+	if prefix == nil {
+		p.noPrefixParseFnError(p.curToken.Type)
+		return nil
+	}
+
+	leftExp := prefix()
+
+	for !p.peekTokenIs(token.SEMICOLON) && precedence < p.peekPrecedence() {
+		infix := p.infixParseFns[p.peekToken.Type]
+		if infix == nil {
+			return leftExp
+		}
+
+		p.nextToken()
+
+		leftExp = infix(leftExp)
+	}
+
+	return leftExp
+}
+
 func (p *Parser) registerPrefix(tokenType token.TokenType, fn prefixParseFn) {
 	p.prefixParseFns[tokenType] = fn
 }
@@ -118,6 +164,7 @@ func (p *Parser) registerInfix(tokenType token.TokenType, fn infixParseFn) {
 }
 
 func (p *Parser) parseIntegerLiteral() ast.Expression {
+	defer untrace(trace("parseIntegerLiteral"))
 	lit := &ast.IntegerLiteral{Token: p.curToken}
 
 	value, err := strconv.ParseInt(p.curToken.Literal, 0, 64)
@@ -172,6 +219,7 @@ func (p *Parser) parseStatement() ast.Statement {
 }
 
 func (p *Parser) parseExpressionStatement() *ast.ExpressionStatement {
+	defer untrace(trace("parseExpressionStatement"))
 	stmt := &ast.ExpressionStatement{Token: p.curToken}
 	stmt.Expression = p.parseExpression(LOWEST)
 
@@ -187,6 +235,7 @@ func (p *Parser) noPrefixParseFnError(t token.TokenType) {
 }
 
 func (p *Parser) parsePrefixExpression() ast.Expression {
+	defer untrace(trace("parsePrefixExpression"))
 	expression := &ast.PrefixExpression{
 		Token:    p.curToken,
 		Operator: p.curToken.Literal,
@@ -197,29 +246,6 @@ func (p *Parser) parsePrefixExpression() ast.Expression {
 	return expression
 }
 
-func (p *Parser) parseExpression(precedence int) ast.Expression {
-	prefix := p.prefixParseFns[p.curToken.Type]
-	if prefix == nil {
-		p.noPrefixParseFnError(p.curToken.Type)
-		return nil
-	}
-
-	leftExp := prefix()
-
-	for !p.peekTokenIs(token.SEMICOLON) && precedence < p.peekPrecedence() {
-		infix := p.infixParseFns[p.peekToken.Type]
-		if infix == nil {
-			return leftExp
-		}
-
-		p.nextToken()
-
-		leftExp = infix(leftExp)
-	}
-
-	return leftExp
-}
-
 func (p *Parser) parseReturnStatement() *ast.ReturnStatement {
 	stmt := &ast.ReturnStatement{
 		Token: p.curToken,
@@ -227,7 +253,7 @@ func (p *Parser) parseReturnStatement() *ast.ReturnStatement {
 
 	p.nextToken()
 
-	if !p.curTokenIs(token.SEMICOLON) {
+	if p.peekTokenIs(token.SEMICOLON) {
 		p.nextToken()
 	}
 
@@ -250,7 +276,10 @@ func (p *Parser) parseLetStatement() *ast.LetStatement {
 		return nil
 	}
 
-	if !p.curTokenIs(token.SEMICOLON) {
+	p.nextToken()
+	stmt.Value = p.parseExpression(LOWEST)
+
+	if p.peekTokenIs(token.SEMICOLON) {
 		p.nextToken()
 	}
 
